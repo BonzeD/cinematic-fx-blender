@@ -44,4 +44,31 @@ m = bpy.data.images.load('/tmp/cfx-black-mask.exr')
 mask_diff = sum(abs(x-y) for x,y in zip(a.pixels[:], m.pixels[:]))
 print('CFX BLACK-MASK DIFFERENCE:', mask_diff)
 assert mask_diff < 0.01, 'Black custom mask must preserve input'
+# A built-in texture should drive a visible compositing result.
+c.mask_type = 'NONE'; c.mask_image = None
+c.builtin_preset = 'ANAMORPHIC'; bpy.ops.cinematic_fx.use_preset()
+s.render.filepath = '/tmp/cfx-preset.exr'; bpy.ops.render.render(write_still=True)
+p = bpy.data.images.load('/tmp/cfx-preset.exr')
+preset_diff = sum(abs(x-y) for x,y in zip(a.pixels[:], p.pixels[:]))
+print('CFX PRESET DIFFERENCE:', preset_diff)
+assert preset_diff > 1.0, 'Built-in preset must visibly change the render'
+# Object mode: an empty selection emits nothing; a selected object emits light.
+c.source_type = 'OBJECTS'
+s.render.filepath = '/tmp/cfx-empty-emitters.exr'; bpy.ops.render.render(write_still=True)
+e = bpy.data.images.load('/tmp/cfx-empty-emitters.exr')
+empty_diff = sum(abs(x-y) for x,y in zip(a.pixels[:],e.pixels[:]))
+print('CFX EMPTY EMITTER DIFFERENCE:', empty_diff)
+assert empty_diff < 0.01, 'No sources should not add light'
+item = c.emitters.add(); item.object = cube
+s.render.filepath = '/tmp/cfx-object-emitter.exr'; bpy.ops.render.render(write_still=True)
+o = bpy.data.images.load('/tmp/cfx-object-emitter.exr')
+object_diff = sum(abs(x-y) for x,y in zip(a.pixels[:],o.pixels[:]))
+print('CFX OBJECT EMITTER DIFFERENCE:', object_diff)
+assert object_diff > 1.0, 'Selected emitter must visibly change the render'
+c.emitter_use_texture = True
+s.render.filepath = '/tmp/cfx-textured-emitter.exr'; bpy.ops.render.render(write_still=True)
+t = bpy.data.images.load('/tmp/cfx-textured-emitter.exr')
+texture_object_diff = sum(abs(x-y) for x,y in zip(a.pixels[:],t.pixels[:]))
+print('CFX TEXTURED EMITTER DIFFERENCE:', texture_object_diff)
+assert texture_object_diff > 1.0, 'Texture must visibly contribute to object emitter'
 print('CFX RENDER TEST PASSED')
