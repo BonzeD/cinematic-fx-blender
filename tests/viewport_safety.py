@@ -39,6 +39,8 @@ assert next(e for e in scene.compositor_effects if e.node_group==t).enable_for_p
 fx=next(e for e in scene.compositor_effects if e.node_group==t)
 del t['cfx_safe_preview_version']; fx.enable_for_preview=True
 addon.unregister(); addon.register()
+assert bpy.app.timers.is_registered(addon.migrate_after_enable)
+addon.migrate_after_enable()  # Standalone bpy has no interactive event loop.
 scene=bpy.context.scene;t=scene.cinematic_fx.node_group
 fx=next(e for e in scene.compositor_effects if e.node_group==t)
 assert fx.enable_for_preview is False and t.get('cfx_safe_preview_version') == 1
