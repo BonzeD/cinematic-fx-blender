@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Cinematic FX',
     'author': 'Cinematic FX contributors',
-    'version': (1, 2, 0),
+    'version': (1, 3, 0),
     'blender': (5, 3, 0),
     'location': '3D View / Compositor > Sidebar > Cinematic FX',
     'description': 'Non-destructive cinematic rays, streaks, glow and masks',
@@ -152,7 +152,11 @@ def socket(collection, identifier):
 
 
 def link(tree, a, out_id, b, in_id):
-    tree.links.new(socket(a.outputs, out_id), socket(b.inputs, in_id))
+    source = socket(a.outputs, out_id)
+    dest = socket(b.inputs, in_id)
+    if dest.is_linked and dest.links[0].from_socket == source:
+        return
+    tree.links.new(source, dest)
 
 
 def color_mix(tree, name, x, y, mode='ADD'):
@@ -178,7 +182,8 @@ def ensure_alpha_preservation(tree):
     nodes = tree.nodes
     sep = nodes.get('CFX Original Alpha') or node(tree, 'CompositorNodeSeparateColor', 'CFX Original Alpha', 1000, 100)
     restore = nodes.get('CFX Preserve Alpha') or node(tree, 'CompositorNodeSetAlpha', 'CFX Preserve Alpha', 1650, 700)
-    restore.inputs['Type'].default_value = 'Replace Alpha'
+    if restore.inputs['Type'].default_value != 'Replace Alpha':
+        restore.inputs['Type'].default_value = 'Replace Alpha'
     connect_once(tree, nodes['Input'], 'Image', sep, 'Image')
     connect_once(tree, nodes['Blend with Original'], 'Result_Color', restore, 'Image')
     connect_once(tree, sep, 'Alpha', restore, 'Alpha')
@@ -209,6 +214,17 @@ def ensure_scene_tree_owner(settings):
         if local.users == 0:
             bpy.data.node_groups.remove(local)
         raise
+
+
+def ensure_texture_scene_mask(tree):
+    # The texture is a mask on scene pixels, not an independent luminous image.
+    # Thus a texture cannot create a fixed bright star on an otherwise dark view.
+    n = tree.nodes.get('CFX Texture Scene Mask')
+    if n is None:
+        n = color_mix(tree, 'CFX Texture Scene Mask', -850, -100, 'MULTIPLY')
+    connect_once(tree, tree.nodes['Input'], 'Image', n, 'A_Color')
+    connect_once(tree, texture_gain_node(tree), 'Image', n, 'B_Color')
+    return n
 
 
 def image_chain(tree, label, x, y):
@@ -437,6 +453,7 @@ def refresh_emitter_positions(scene, settings):
     if settings.source_type == 'OBJECTS' and settings.track_emitter and first:
         sun = t.nodes.get('Sun Beams')
         if sun: set_if_changed(sun.inputs['Sun Position'], first)
+    return first
 
 
 _refreshing_emitters = False
@@ -495,56 +512,60 @@ def update_settings(self, context):
         t = ensure_scene_tree_owner(self)
         n = t.nodes
         ensure_alpha_preservation(t)
-        n['Custom Texture'].image = self.texture
-        n['Custom Mask'].image = self.mask_image
+        if n['Custom Texture'].image != self.texture: n['Custom Texture'].image = self.texture
+        if n['Custom Mask'].image != self.mask_image: n['Custom Mask'].image = self.mask_image
         mapping = n['Custom Texture Mapping']
-        mapping.inputs['Scale'].default_value = self.texture_scale
-        mapping.inputs['Angle'].default_value = self.texture_rotation
-        mapping.inputs['X'].default_value = self.texture_offset[0]
-        mapping.inputs['Y'].default_value = self.texture_offset[1]
+        set_if_changed(mapping.inputs['Scale'], self.texture_scale)
+        set_if_changed(mapping.inputs['Angle'], self.texture_rotation)
+        set_if_changed(mapping.inputs['X'], self.texture_offset[0])
+        set_if_changed(mapping.inputs['Y'], self.texture_offset[1])
         # Replace links only inside the add-on's own group.
         gain = texture_gain_node(t)
-        gain.inputs['Master Gain'].default_value = self.texture_gain
+        set_if_changed(gain.inputs['Master Gain'], self.texture_gain)
+        source_output = 'Image'
         if self.source_type in {'OBJECTS', 'LAYERS'}:
             source = ensure_emitter_nodes(self.id_data, self)
         elif self.source_type == 'TEXTURE' and self.texture:
-            source = gain
+            source = ensure_texture_scene_mask(t)
+            source_output = 'Result_Color'
         else:
             source = n['Input']
         for name in ('Sun Beams', 'Streaks', 'Glow', 'Caustic Look'):
-            link(t, source, 'Image', n[name], 'Image')
-            n[name].inputs['Threshold'].default_value = self.threshold
-            n[name].inputs['Smoothness'].default_value = self.edge_smoothness
+            link(t, source, source_output, n[name], 'Image')
+            set_if_changed(n[name].inputs['Threshold'], self.threshold)
+            set_if_changed(n[name].inputs['Smoothness'], self.edge_smoothness)
         sun, streak, glow, ghost = (n[x] for x in ('Sun Beams', 'Streaks', 'Glow', 'Caustic Look'))
-        sun.inputs['Sun Position'].default_value = (self.sun_position[0], self.sun_position[1])
+        tracked = None
         if self.source_type in {'OBJECTS', 'LAYERS'}:
-            refresh_emitter_positions(self.id_data, self)
-        sun.inputs['Size'].default_value = 0.1 + 0.9 * self.falloff
-        sun.inputs['Strength'].default_value = self.ray_strength if self.pattern in {'SUN', 'COMBINED'} else 0.0
-        streak.inputs['Streaks'].default_value = self.pattern_density
-        streak.inputs['Fade'].default_value = 0.65 + 0.34 * self.falloff
-        streak.inputs['Streaks Angle'].default_value = self.streak_angle
-        streak.inputs['Strength'].default_value = self.ray_strength if self.pattern in {'STREAKS', 'COMBINED'} else 0.0
-        glow.inputs['Strength'].default_value = self.glow_strength
-        glow.inputs['Size'].default_value = self.glow_size
-        ghost.inputs['Strength'].default_value = 0.35 if self.enable_caustics else 0.0
-        n['Ray Clarity'].inputs['Master Contrast'].default_value = 0.5 + self.ray_sharpness * 1.5
+            tracked = refresh_emitter_positions(self.id_data, self)
+        if not (self.source_type == 'OBJECTS' and self.track_emitter and tracked):
+            set_if_changed(sun.inputs['Sun Position'], (self.sun_position[0], self.sun_position[1]))
+        set_if_changed(sun.inputs['Size'], 0.1 + 0.9 * self.falloff)
+        set_if_changed(sun.inputs['Strength'], self.ray_strength if self.pattern in {'SUN', 'COMBINED'} else 0.0)
+        set_if_changed(streak.inputs['Streaks'], self.pattern_density)
+        set_if_changed(streak.inputs['Fade'], 0.65 + 0.34 * self.falloff)
+        set_if_changed(streak.inputs['Streaks Angle'], self.streak_angle)
+        set_if_changed(streak.inputs['Strength'], self.ray_strength if self.pattern in {'STREAKS', 'COMBINED'} else 0.0)
+        set_if_changed(glow.inputs['Strength'], self.glow_strength)
+        set_if_changed(glow.inputs['Size'], self.glow_size)
+        set_if_changed(ghost.inputs['Strength'], 0.35 if self.enable_caustics else 0.0)
+        set_if_changed(n['Ray Clarity'].inputs['Master Contrast'], 0.5 + self.ray_sharpness * 1.5)
         blur_size = self.edge_smoothness * 4.0
-        n['Edge Smoothness'].inputs['Size'].default_value = (blur_size, blur_size)
-        n['Blend with Original'].blend_type = self.blend_mode
+        set_if_changed(n['Edge Smoothness'].inputs['Size'], (blur_size, blur_size))
+        if n['Blend with Original'].blend_type != self.blend_mode:
+            n['Blend with Original'].blend_type = self.blend_mode
         # Brightness masking and the optional density mask are screen-space approximations.
         # WHITE means no spatial mask; image sockets can carry a constant color.
         mbw = n['Mask Luminance']
         mask_input = mbw.inputs['Image']
-        for old in list(mask_input.links):
-            t.links.remove(old)
         if self.mask_type == 'CUSTOM' and self.mask_image:
             link(t, n['Custom Mask Mapping'], 'Image', mbw, 'Image')
         elif self.mask_type == 'BRIGHTNESS' or self.use_density_mask:
             link(t, sun, 'Highlights', mbw, 'Image')
         else:
-            mask_input.default_value = (1.0, 1.0, 1.0, 1.0)
-        n['Mask Strength'].inputs[1].default_value = min(1.0, self.opacity * self.volumetric_density)
+            for old in list(mask_input.links): t.links.remove(old)
+            set_if_changed(mask_input, (1.0, 1.0, 1.0, 1.0))
+        set_if_changed(n['Mask Strength'].inputs[1], min(1.0, self.opacity * self.volumetric_density))
         if self.last_error: self.last_error = ''
     except (KeyError, AttributeError, TypeError, ValueError, ReferenceError, RuntimeError, StopIteration) as exc:
         message = str(exc) or exc.__class__.__name__
@@ -597,7 +618,7 @@ class CFX_RayLayer(bpy.types.PropertyGroup):
 class CFX_Settings(bpy.types.PropertyGroup):
     last_error: StringProperty(name='Last Error', default='', options={'HIDDEN'})
     node_group: PointerProperty(type=bpy.types.NodeTree)
-    source_type: EnumProperty(name='Source Type', items=[('SOURCE','Source','Scene image'),('TEXTURE','Texture','Use the custom image as effect source'),('OBJECTS','Objects / Lights','Create screen-space sources at selected object origins'),('LAYERS','Textured Rays','Combine independently configured texture rays')], default='SOURCE', update=update_settings)
+    source_type: EnumProperty(name='Source Type', items=[('SOURCE','Source','Scene image'),('TEXTURE','Texture','Modulate the scene highlights with the selected image'),('OBJECTS','Objects / Lights','Create screen-space sources at selected object origins'),('LAYERS','Textured Rays','Combine independently configured texture rays')], default='SOURCE', update=update_settings)
     emitters: CollectionProperty(type=CFX_Emitter)
     ray_layers: CollectionProperty(type=CFX_RayLayer)
     ray_layer_count: IntProperty(name='Texture Ray Count', description='Number of independently configured texture layers', default=3, min=1, max=12, update=update_settings)
@@ -652,8 +673,10 @@ class CFX_OT_install(bpy.types.Operator):
         try:
             t = build_tree()
             effect = scene.compositor_effects.new('Cinematic FX')
+            effect.enable_for_preview = False
             effect.node_group = t
             settings.node_group = t
+            t['cfx_safe_preview_version'] = 1
             update_settings(settings, context)
             if settings.last_error:
                 raise RuntimeError(settings.last_error)
@@ -754,6 +777,10 @@ def draw_panel(self, context):
         layout.label(text='Node error: ' + s.last_error[:90], icon='ERROR')
     if not any(effect.node_group == s.node_group for effect in context.scene.compositor_effects):
         layout.label(text='Effect missing from scene stack; add again', icon='ERROR')
+    effects = [effect for effect in context.scene.compositor_effects if effect.node_group == s.node_group]
+    if effects:
+        layout.prop(effects[0], 'enable_for_preview', text='Viewport Preview (may be slow)')
+        if effects[0].enable_for_preview: layout.label(text='Heavy effect: preview may lag', icon='INFO')
     box = layout.box(); box.label(text='Source & Texture'); box.prop(s, 'source_type')
     if s.source_type == 'OBJECTS':
         box.operator('cinematic_fx.add_selected', icon='ADD')
@@ -781,7 +808,9 @@ def draw_panel(self, context):
                 sub.prop(layer, 'size'); sub.prop(layer, 'color'); sub.prop(layer, 'rotation'); sub.prop(layer, 'offset')
     box.prop(s, 'builtin_preset'); box.operator('cinematic_fx.use_preset', icon='TEXTURE')
     box.template_ID_preview(s, 'texture', open='image.open', rows=2, cols=4)
-    if s.source_type == 'TEXTURE': box.prop(s, 'texture_gain')
+    if s.source_type == 'TEXTURE':
+        box.prop(s, 'texture_gain')
+        box.label(text='Texture masks scene highlights', icon='INFO')
     if s.source_type == 'TEXTURE' and not s.texture:
         box.label(text='No texture: using scene image', icon='INFO')
     box.label(text='Texture Remapping'); box.prop(s, 'texture_scale'); box.prop(s, 'texture_rotation'); box.prop(s, 'texture_offset')
@@ -810,12 +839,43 @@ class CFX_PT_compositor(bpy.types.Panel):
     draw = draw_panel
 
 
+def migrate_scene_preview(scene):
+    if not scene.is_editable:
+        return
+    settings = getattr(scene, 'cinematic_fx', None)
+    if not settings or not settings.node_group:
+        return
+    tree = settings.node_group
+    if tree.get('cfx_safe_preview_version', 0) >= 1:
+        return
+    # Localize shared groups before setting the per-scene migration marker.
+    tree = ensure_scene_tree_owner(settings)
+    for effect in scene.compositor_effects:
+        if effect.node_group == tree:
+            effect.enable_for_preview = False
+    update_settings(settings, None)
+    if not settings.last_error:
+        settings.node_group['cfx_safe_preview_version'] = 1
+
+
+@persistent
+def migrate_on_load(_dummy):
+    for scene in bpy.data.scenes:
+        try:
+            migrate_scene_preview(scene)
+        except (RuntimeError, ReferenceError, AttributeError, TypeError) as exc:
+            print('Cinematic FX: could not migrate viewport preview:', exc)
+
+
 classes = (CFX_Emitter, CFX_RayLayer, CFX_Settings, CFX_OT_install, CFX_OT_add_selected, CFX_OT_remove_emitter, CFX_OT_use_preset, CFX_OT_remove, CFX_PT_view, CFX_PT_compositor)
 
 
 def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.cinematic_fx = PointerProperty(type=CFX_Settings)
+    if migrate_on_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(migrate_on_load)
+    migrate_on_load(None)
     if update_frame_handler not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(update_frame_handler)
     if refresh_emitters_handler not in bpy.app.handlers.depsgraph_update_post:
@@ -823,6 +883,8 @@ def register():
 
 
 def unregister():
+    if migrate_on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(migrate_on_load)
     if update_frame_handler in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(update_frame_handler)
     if refresh_emitters_handler in bpy.app.handlers.depsgraph_update_post:
