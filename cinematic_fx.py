@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Cinematic FX',
     'author': 'Cinematic FX contributors',
-    'version': (1, 3, 0),
+    'version': (1, 3, 1),
     'blender': (5, 3, 0),
     'location': '3D View / Compositor > Sidebar > Cinematic FX',
     'description': 'Non-destructive cinematic rays, streaks, glow and masks',
@@ -867,6 +867,15 @@ def migrate_on_load(_dummy):
             print('Cinematic FX: could not migrate viewport preview:', exc)
 
 
+def migrate_after_enable():
+    # Blender restricts bpy.data during add-on registration. The timer runs
+    # after enable returns, when the existing scene data is available again.
+    if not hasattr(bpy.data, 'scenes'):
+        return 0.1
+    migrate_on_load(None)
+    return None
+
+
 classes = (CFX_Emitter, CFX_RayLayer, CFX_Settings, CFX_OT_install, CFX_OT_add_selected, CFX_OT_remove_emitter, CFX_OT_use_preset, CFX_OT_remove, CFX_PT_view, CFX_PT_compositor)
 
 
@@ -875,7 +884,8 @@ def register():
     bpy.types.Scene.cinematic_fx = PointerProperty(type=CFX_Settings)
     if migrate_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_on_load)
-    migrate_on_load(None)
+    if not bpy.app.timers.is_registered(migrate_after_enable):
+        bpy.app.timers.register(migrate_after_enable, first_interval=0.1)
     if update_frame_handler not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(update_frame_handler)
     if refresh_emitters_handler not in bpy.app.handlers.depsgraph_update_post:
@@ -883,6 +893,8 @@ def register():
 
 
 def unregister():
+    if bpy.app.timers.is_registered(migrate_after_enable):
+        bpy.app.timers.unregister(migrate_after_enable)
     if migrate_on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_on_load)
     if update_frame_handler in bpy.app.handlers.frame_change_post:
