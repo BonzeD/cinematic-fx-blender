@@ -29,7 +29,9 @@ settings.blend_mode = 'SCREEN'
 assert t.nodes['Blend with Original'].blend_type == 'SCREEN'
 img = bpy.data.images.new('Test texture', 8, 8)
 settings.texture = img; settings.source_type = 'TEXTURE'
-assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'Custom Texture Gain'
+assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'CFX Texture Scene Mask'
+assert addon.socket(t.nodes['CFX Texture Scene Mask'].inputs, 'A_Color').links[0].from_node.name == 'Input'
+assert addon.socket(t.nodes['CFX Texture Scene Mask'].inputs, 'B_Color').links[0].from_node.name == 'Custom Texture Gain'
 settings.source_type = 'SOURCE'; assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'Input'
 # All embedded presets generate distinct, packed image datablocks.
 signatures = set()
@@ -54,7 +56,7 @@ assert not t.nodes['Mask Luminance'].inputs['Image'].is_linked
 t.nodes.remove(t.nodes['Custom Texture Gain'])
 settings.source_type = 'TEXTURE'
 assert t.nodes.get('Custom Texture Gain')
-assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'Custom Texture Gain'
+assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'CFX Texture Scene Mask'
 # Test multi-object emitters, tracking, disabled items, and reindexing.
 settings.source_type = 'OBJECTS'
 cube = bpy.data.objects.get('Cube'); light = bpy.data.objects.get('Light')
