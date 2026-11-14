@@ -31,7 +31,7 @@ img = bpy.data.images.new('Test texture', 8, 8)
 settings.texture = img; settings.source_type = 'TEXTURE'
 assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'Custom Texture Gain'
 settings.source_type = 'SOURCE'; assert t.nodes['Sun Beams'].inputs['Image'].links[0].from_node.name == 'Input'
-# All ten embedded presets generate distinct, packed image datablocks.
+# All embedded presets generate distinct, packed image datablocks.
 signatures = set()
 for key, label, _ in addon.PRESETS:
     settings.builtin_preset = key
@@ -43,7 +43,7 @@ for key, label, _ in addon.PRESETS:
     pixels = image.pixels[:]
     assert max(pixels[0::4]) > 0.4
     signatures.add(tuple(round(pixels[i], 4) for i in range(0, len(pixels), 4004)))
-assert len(signatures) == 10
+assert len(signatures) == len(addon.PRESETS)
 settings.texture_gain = 7.0
 assert t.nodes['Custom Texture Gain'].inputs['Master Gain'].default_value == 7.0
 settings.mask_type = 'CUSTOM'; settings.mask_image = img
